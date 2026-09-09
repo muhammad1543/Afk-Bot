@@ -2,7 +2,9 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
+import httpx
 import websockets
 from dotenv import load_dotenv
 
@@ -18,6 +20,13 @@ def safe_path(value: str) -> Path:
     if candidate != ROOT and ROOT not in candidate.parents:
         raise ValueError("Path must stay inside the agent workspace")
     return candidate
+
+
+def safe_url(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Only public http/https URLs are allowed")
+    return value
 
 
 async def handle(ws, job: dict):
@@ -44,6 +53,13 @@ async def handle(ws, job: dict):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
             result = f"Wrote {path.relative_to(ROOT)}"
+        elif action == "fetch_url":
+            target = safe_url(str(args.get("url", "")))
+            async with httpx.AsyncClient(follow_redirects=True, timeout=20, headers={"User-Agent": "PersonalAIAgent/1.0"}) as client:
+                response = await client.get(target)
+                response.raise_for_status()
+                text = response.text
+            result = text[:100_000]
         else:
             raise ValueError("Action not enabled in the safe worker")
         await ws.send(json.dumps({"type": "result", "request_id": rid, "ok": True, "result": result}))
