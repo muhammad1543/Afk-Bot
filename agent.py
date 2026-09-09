@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 import websockets
 
+from agent.skill_loader import SkillLoader
+
 load_dotenv()
 
 ROOT = Path(__file__).resolve().parent
@@ -23,13 +25,14 @@ ALLOWED_USERS = {x.strip() for x in os.getenv("AGENT_ALLOWED_USERS", "").split("
 WORKER_SECRET = os.getenv("WORKER_SECRET", "change-this-secret")
 WORKER_HOST = os.getenv("WORKER_HOST", "127.0.0.1")
 WORKER_PORT = int(os.getenv("WORKER_PORT", "8765"))
+SKILL_ROOT = ROOT / "skills"
 
 SYSTEM_PROMPT = """You are a modular personal AI agent controlled through Discord.
 Be practical and action-oriented. Never claim a real-world action happened unless a tool returned success.
 Use registered skills for actions. Do not reveal secrets. Publishing, financial actions, account/security changes,
 deleting data, mass messaging and other consequential actions require explicit user approval.
 When a user asks for a task, return JSON only with keys: reply, action, args.
-Allowed action names are listed in the skill catalog. Use action null for a normal answer.
+Allowed action names are listed in the action catalog. Use action null for a normal answer.
 """
 
 
@@ -57,16 +60,6 @@ class Memory:
     def facts(self, user: str, limit: int = 20):
         with sqlite3.connect(self.path) as c:
             return [r[0] for r in c.execute("SELECT fact FROM facts WHERE user=? ORDER BY id DESC LIMIT ?", (user, limit)).fetchall()]
-
-    def task(self, user: str, request: str, status: str = "queued") -> str:
-        task_id = uuid.uuid4().hex[:8]
-        with sqlite3.connect(self.path) as c:
-            c.execute("INSERT INTO tasks(id,user,request,status) VALUES(?,?,?,?)", (task_id, user, request, status))
-        return task_id
-
-    def update_task(self, task_id: str, status: str, result: str = ""):
-        with sqlite3.connect(self.path) as c:
-            c.execute("UPDATE tasks SET status=?,result=? WHERE id=?", (status, result, task_id))
 
 
 class WorkerBridge:
@@ -106,15 +99,16 @@ class WorkerBridge:
         await self.websocket.send(json.dumps({"type": "task", "request_id": rid, "action": action, "args": args}))
         try:
             return await asyncio.wait_for(fut, timeout)
-        except Exception as e:
+        except Exception as exc:
             self.pending.pop(rid, None)
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": str(exc)}
 
 
 class Agent:
     def __init__(self):
         self.memory = Memory(DB)
         self.worker = WorkerBridge()
+        self.loader = SkillLoader(SKILL_ROOT)
         key = os.getenv("OPENAI_API_KEY", "").strip()
         self.llm = AsyncOpenAI(api_key=key, base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")) if key else None
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -125,10 +119,16 @@ class Agent:
             "write_file": "Create or replace a text file in the local workspace",
             "remember": "Store a user fact in long-term memory",
             "ping_laptop": "Check whether the laptop worker is connected",
+            "fetch_url": "Fetch a public web URL through the connected laptop worker",
         }
 
     def allowed(self, user_id: str) -> bool:
         return not ALLOWED_USERS or user_id in ALLOWED_USERS
+
+    def skill_report(self) -> str:
+        defs = self.loader.list_definitions()
+        names = [x["name"] for x in defs]
+        return f"Action skills: {len(self.skills)} | SKILL.md definitions: {len(names)}\n" + (", ".join(names) if names else "(none)")
 
     async def execute(self, action: str, args: dict[str, Any], user: str):
         if action == "remember":
@@ -141,12 +141,17 @@ class Agent:
             result = await self.worker.request("ping", {})
             return "Laptop worker online." if result.get("ok") else f"Laptop worker: {result.get('error', 'offline')}"
         if action == "list_files":
-            return (await self.worker.request("list_files", {})).get("result", "No result.")
+            result = await self.worker.request("list_files", {})
+            return result.get("result") if result.get("ok") else result.get("error", "No result.")
         if action == "read_file":
-            return (await self.worker.request("read_file", {"path": args.get("path", "")})).get("result", "No result.")
+            result = await self.worker.request("read_file", {"path": args.get("path", "")})
+            return result.get("result") if result.get("ok") else result.get("error", "No result.")
         if action == "write_file":
             result = await self.worker.request("write_file", {"path": args.get("path", ""), "content": args.get("content", "")})
             return result.get("result") or result.get("error", "No result.")
+        if action == "fetch_url":
+            result = await self.worker.request("fetch_url", {"url": args.get("url", "")})
+            return result.get("result") if result.get("ok") else result.get("error", "No result.")
         return "Unknown action."
 
     async def ask(self, user: str, text: str) -> str:
@@ -156,10 +161,11 @@ class Agent:
             self.memory.add(user, "assistant", reply)
             return reply
 
-        catalog = "\n".join(f"- {name}: {desc}" for name, desc in self.skills.items())
+        action_catalog = "\n".join(f"- {name}: {desc}" for name, desc in self.skills.items())
+        definition_catalog = self.loader.catalog()
         facts = "\n".join(f"- {x}" for x in self.memory.facts(user)) or "(none)"
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT + "\n\nSkill catalog:\n" + catalog + "\n\nKnown user facts:\n" + facts},
+            {"role": "system", "content": SYSTEM_PROMPT + "\n\nAction catalog:\n" + action_catalog + "\n\nSkill definitions available as guidance:\n" + definition_catalog[:12000] + "\n\nKnown user facts:\n" + facts},
             *self.memory.recent(user),
         ]
         response = await self.llm.chat.completions.create(
@@ -226,12 +232,12 @@ async def authorize(ctx):
 
 @bot.command()
 async def status(ctx):
-    await ctx.send(f"🟢 Agent online | Discord ✅ | Memory ✅ | Laptop worker {'✅' if agent.worker.online else '❌'} | Skills {len(agent.skills)}")
+    await ctx.send(f"🟢 Agent online | Discord ✅ | Memory ✅ | Laptop worker {'✅' if agent.worker.online else '❌'} | {agent.skill_report()}")
 
 
 @bot.command()
 async def skills(ctx):
-    await ctx.send("\n".join(f"`{name}` — {desc}" for name, desc in agent.skills.items()))
+    await ctx.send(agent.skill_report() + "\n\n" + "\n".join(f"`{name}` — {desc}" for name, desc in agent.skills.items()))
 
 
 @bot.command()
