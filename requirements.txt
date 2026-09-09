@@ -1,0 +1,8 @@
+discord.py>=2.6,<3
+openai>=1.100,<2
+python-dotenv>=1.1,<2
+httpx>=0.28,<1
+fastapi>=0.116,<1
+uvicorn[standard]>=0.35,<1
+pydantic>=2.11,<3
+websockets>=15,<16
