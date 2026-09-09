@@ -1,40 +1,29 @@
-# Afk Bot
-<p align="center"> 
-    <img src="https://img.shields.io/github/issues/urfate/afk-bot">
-    <img src="https://img.shields.io/github/forks/urfate/afk-bot">
-    <img src="https://img.shields.io/github/stars/urfate/afk-bot">
-    <img src="https://img.shields.io/github/license/urfate/afk-bot">
-</p>
+# Personal AI Agent
 
-<p align="center">
-    Functional minecraft AFK bot for servers
-</p>
+This repository now contains a modular Discord-controlled personal AI agent alongside the original AFK Bot code.
 
-<p align="center">
-    Anti-AFK, Auto-Auth, Microsoft/Offline accounts support.
-</p>
+## Quick start (Windows)
 
-## Installation
+1. Install Python 3.11+.
+2. Clone/download this repository.
+3. Create a virtual environment: `python -m venv .venv`
+4. Activate it: `.venv\\Scripts\\activate`
+5. Install: `pip install -r requirements.txt`
+6. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` and `OPENAI_API_KEY`.
+7. Enable Discord Developer Portal **Message Content Intent** for the bot.
+8. Start: `python agent.py`
+9. In Discord, mention the bot and send a request. `!status` and `!skills` are also available.
 
- 1. [Download](https://github.com/urFate/Afk-Bot/tags) the latest package.
- 2. Download & install [Node.JS](https://nodejs.org/en/download/)
- 3. Run `npm install` command in bot directory.
- 
- ## Usage
- 
- 1. Configure bot in `settings.json` file. [Bot configuration is explained in our wiki](https://urfate.gitbook.io/afk-bot/bot-configuration)
- 2. Start bot with `node .` command.
+## Laptop worker
 
-## Features
+Configure the same `.env` on the laptop and run `python worker.py`. The starter worker intentionally exposes only safe workspace listing. More powerful system/browser/media skills should be explicit and permissioned rather than arbitrary shell execution.
 
- - Anti-AFK Kick Module
- - Move to target block after join
- - Mojang/Microsoft Account support
- - Chat log
- - Chat messages Module
- - Auto reconnect
- - Supported server versions: `1.8 - 1.19.3`
- 
- ### License
- [MIT](https://github.com/urFate/Afk-Bot/blob/main/LICENSE)
+## Skill system
 
+Skills live under `skills/`. Each skill should document permissions, inputs, outputs and failure handling. GitHub can act as the skill registry, but arbitrary repositories/code must not be executed blindly.
+
+## Architecture
+
+`Discord -> Agent Core -> Planner -> Skill Router -> Skill -> Worker/API -> Result -> Discord`
+
+The project includes Discord control, LLM routing, persistent SQLite memory, permission gates, a laptop worker and a GitHub-oriented skill structure. The roadmap covers browser/web research, coding, files/documents, image/video, YouTube, social media, SEO, marketing, ecommerce, Amazon, data analysis, email and automation.
